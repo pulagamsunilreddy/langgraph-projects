@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EasyTrip Agent</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <span class="logo">ET</span>
+        <div>
+          <h1>EasyTrip</h1>
+          <p>Your LangGraph travel planning assistant</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="chat-panel">
+      <div id="messages" class="messages" aria-live="polite">
+        <div class="message assistant">
+          <div class="bubble">
+            Hi! I can help you find flights and plan trips. Try something like
+            “Find flights from Delhi to Goa on 2026-09-15”.
+          </div>
+        </div>
+      </div>
+
+      <form id="chat-form" class="composer">
+        <textarea
+          id="message-input"
+          rows="1"
+          placeholder="Ask about flights, destinations, or trip ideas..."
+          required
+        ></textarea>
+        <button type="submit" id="send-btn">Send</button>
+      </form>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
