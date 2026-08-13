@@ -83,8 +83,10 @@ body {
   line-height: 1;
   letter-spacing: -0.06em;
   margin-bottom: 18px;
+  color: #ffffff; /* fallback if clip isn't supported */
   background: linear-gradient(135deg, #ffffff, #93c5fd, #c084fc);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -477,7 +479,7 @@ footer {
   .download-btn {
       flex: 1;
   }
-
+  
   .pdf-content {
       padding: 20px;
   }
