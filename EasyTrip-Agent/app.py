@@ -1,39 +1,115 @@
-"""Flask web app for EasyTrip-Agent."""
+from pathlib import Path
+import traceback
+import uvicorn
 
-from __future__ import annotations
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
-from flask import Flask, jsonify, render_template, request
+from backend import run_travel_agent
 
-from backend import run_agent
+BASE_DIR = Path(__file__).resolve().parent
 
-app = Flask(__name__)
+app = FastAPI(
+    title="TripMate AI",
+    description="LangGraph Multi-Agent Travel Planner with FastAPI Frontend",
+    version="1.0.0"
+)
 
 
-@app.get("/")
-def index():
-    return render_template("index.html")
+app.mount(
+    "/static",
+    StaticFiles(directory=str(BASE_DIR / "static")),
+    name="static"
+)
 
 
-@app.post("/chat")
-def chat():
-    payload = request.get_json(silent=True) or {}
-    message = (payload.get("message") or "").strip()
-    history = payload.get("history") or []
+templates = Jinja2Templates(
+    directory=str(BASE_DIR / "templates")
+)
 
-    if not message:
-        return jsonify({"error": "Message is required."}), 400
 
+
+class TravelRequest(BaseModel):
+    message: str
+    thread_id: str | None = None
+
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={}
+    )
+
+
+@app.post("/api/travel")
+async def travel_planner(request_data: TravelRequest):
     try:
-        reply = run_agent(message, history=history)
-        return jsonify({"reply": reply})
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
+        user_message = request_data.message.strip()
+
+        if not user_message:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "Message cannot be empty."
+                }
+            )
+
+        result = run_travel_agent(
+            user_input=user_message,
+            thread_id=request_data.thread_id
+        )
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "thread_id": result["thread_id"],
+                "answer": result["answer"],
+                "flight_results": result["flight_results"],
+                "hotel_results": result["hotel_results"],
+                "itinerary": result["itinerary"],
+                "llm_calls": result["llm_calls"],
+            }
+        )
+
+    except Exception as e:
+        print("ERROR:", e)
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e)
+            }
+        )
+
 
 
 @app.get("/health")
-def health():
-    return jsonify({"status": "ok", "service": "EasyTrip-Agent"})
+async def health_check():
+    return {
+        "status": "ok",
+        "message": "AI Travel Planner API is running"
+    }
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return JSONResponse(content={})
+
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    uvicorn.run(
+        "app:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True
+    )

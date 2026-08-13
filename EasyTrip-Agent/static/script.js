@@ -1,80 +1,183 @@
-const messagesEl = document.getElementById("messages");
-const formEl = document.getElementById("chat-form");
-const inputEl = document.getElementById("message-input");
-const sendBtn = document.getElementById("send-btn");
+let currentThreadId = localStorage.getItem("travel_thread_id") || null;
+let latestAnswerMarkdown = "";
 
-const history = [];
-
-function appendMessage(role, content, extraClass = "") {
-  const row = document.createElement("div");
-  row.className = `message ${role}`;
-
-  const bubble = document.createElement("div");
-  bubble.className = `bubble ${extraClass}`.trim();
-  bubble.textContent = content;
-
-  row.appendChild(bubble);
-  messagesEl.appendChild(row);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  return bubble;
+function setPrompt(text) {
+    document.getElementById("userInput").value = text;
 }
 
 function setLoading(isLoading) {
-  sendBtn.disabled = isLoading;
-  inputEl.disabled = isLoading;
+    const sendBtn = document.getElementById("sendBtn");
+    const btnText = document.getElementById("btnText");
+    const btnLoader = document.getElementById("btnLoader");
+
+    sendBtn.disabled = isLoading;
+
+    if (isLoading) {
+        btnText.classList.add("hidden");
+        btnLoader.classList.remove("hidden");
+    } else {
+        btnText.classList.remove("hidden");
+        btnLoader.classList.add("hidden");
+    }
 }
 
-function autoResize() {
-  inputEl.style.height = "auto";
-  inputEl.style.height = `${Math.min(inputEl.scrollHeight, 140)}px`;
+function showError(message) {
+    const errorBox = document.getElementById("errorBox");
+
+    errorBox.textContent = message;
+    errorBox.classList.remove("hidden");
 }
 
-inputEl.addEventListener("input", autoResize);
+function hideError() {
+    const errorBox = document.getElementById("errorBox");
 
-inputEl.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    formEl.requestSubmit();
-  }
-});
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+}
 
-formEl.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const message = inputEl.value.trim();
-  if (!message) return;
+function showResult(answer, threadId) {
+    latestAnswerMarkdown = answer;
 
-  appendMessage("user", message);
-  history.push({ role: "user", content: message });
-  inputEl.value = "";
-  autoResize();
+    const resultSection = document.getElementById("resultSection");
+    const resultBox = document.getElementById("resultBox");
+    const threadInfo = document.getElementById("threadInfo");
 
-  const typing = appendMessage("assistant", "Thinking...", "typing");
-  setLoading(true);
-
-  try {
-    const response = await fetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history }),
-    });
-
-    const data = await response.json();
-    typing.remove();
-
-    if (!response.ok) {
-      appendMessage("assistant", data.error || "Something went wrong.", "error");
-      return;
+    if (typeof marked !== "undefined") {
+        resultBox.innerHTML = marked.parse(answer);
+    } else {
+        resultBox.innerText = answer;
     }
 
-    appendMessage("assistant", data.reply);
-    history.push({ role: "assistant", content: data.reply });
-  } catch (error) {
-    typing.remove();
-    appendMessage("assistant", `Network error: ${error.message}`, "error");
-  } finally {
-    setLoading(false);
-    inputEl.focus();
-  }
-});
+    threadInfo.textContent = `Thread ID: ${threadId}`;
 
-inputEl.focus();
+    resultSection.classList.remove("hidden");
+
+    resultSection.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+    });
+}
+
+async function sendMessage() {
+    hideError();
+
+    const input = document.getElementById("userInput");
+    const message = input.value.trim();
+
+    if (!message) {
+        showError("Please enter your travel request first.");
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+        const response = await fetch("/api/travel", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                message: message,
+                thread_id: currentThreadId
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "Something went wrong.");
+        }
+
+        currentThreadId = data.thread_id;
+        localStorage.setItem("travel_thread_id", currentThreadId);
+
+        showResult(data.answer, data.thread_id);
+
+    } catch (error) {
+        showError(error.message);
+    } finally {
+        setLoading(false);
+    }
+}
+
+function copyResult() {
+    const resultBox = document.getElementById("resultBox");
+    const text = resultBox.innerText;
+
+    if (!text) {
+        return;
+    }
+
+    navigator.clipboard.writeText(text)
+        .then(() => {
+            const copyBtn = document.querySelector(".copy-btn");
+            const oldText = copyBtn.textContent;
+
+            copyBtn.textContent = "Copied!";
+
+            setTimeout(() => {
+                copyBtn.textContent = oldText;
+            }, 1400);
+        })
+        .catch(() => {
+            showError("Could not copy result.");
+        });
+}
+
+function downloadPDF() {
+    const pdfContent = document.getElementById("pdfContent");
+
+    if (!latestAnswerMarkdown || !pdfContent) {
+        showError("No travel plan available to download.");
+        return;
+    }
+
+    const downloadBtn = document.querySelector(".download-btn");
+    const oldText = downloadBtn.textContent;
+
+    downloadBtn.textContent = "Preparing PDF...";
+    downloadBtn.disabled = true;
+
+    const options = {
+        margin: 0.5,
+        filename: "ai-travel-plan.pdf",
+        image: {
+            type: "jpeg",
+            quality: 0.98
+        },
+        html2canvas: {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: "#ffffff"
+        },
+        jsPDF: {
+            unit: "in",
+            format: "a4",
+            orientation: "portrait"
+        },
+        pagebreak: {
+            mode: ["avoid-all", "css", "legacy"]
+        }
+    };
+
+    html2pdf()
+        .set(options)
+        .from(pdfContent)
+        .save()
+        .then(() => {
+            downloadBtn.textContent = oldText;
+            downloadBtn.disabled = false;
+        })
+        .catch(() => {
+            downloadBtn.textContent = oldText;
+            downloadBtn.disabled = false;
+            showError("Could not download PDF.");
+        });
+}
+
+document.addEventListener("keydown", function(event) {
+    if (event.ctrlKey && event.key === "Enter") {
+        sendMessage();
+    }
+});

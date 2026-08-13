@@ -1,93 +1,250 @@
-"""LangGraph backend for EasyTrip-Agent."""
-
-from __future__ import annotations
-
 import os
-from typing import Annotated, Sequence, TypedDict
-
+import certifi
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-
-from tools import search_flights, search_web
-
+from typing import TypedDict, Annotated
+import operator
+import uuid
+import psycopg
+from psycopg.rows import dict_row
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.postgres import PostgresSaver
 load_dotenv()
+from langchain_openai import ChatOpenAI
+from tools.flight_tool import search_flights
+from tools.tavily_tool import tavily_search
+from langchain_core.messages import (AnyMessage, AIMessage, HumanMessage, SystemMessage)
 
-SYSTEM_PROMPT = """You are EasyTrip, a helpful travel planning assistant.
-You help users find flights, research destinations, and plan trips.
-Use the available tools when you need live flight options or web research.
-Be concise, practical, and friendly. When showing flights, highlight price,
-timing, and airline clearly. Ask clarifying questions if origin, destination,
-or dates are missing.
+os.environ["SSL_CERT_FILE"] = certifi.where()
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+
+def get_database_url():
+    database_url = os.getenv("DATABASE_URL")
+
+    if not database_url:
+        raise ValueError(
+            "DATABASE_URL is missing. Please add your Render PostgreSQL External Database URL to .env"
+        )
+
+    if "sslmode=" not in database_url:
+        separator = "&" if "?" in database_url else "?"
+        database_url = f"{database_url}{separator}sslmode=require"
+
+    return database_url
+
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is missing. Please add it to your .env file.")
+
+
+# =========================
+# LLM
+# =========================
+
+llm = ChatOpenAI(
+    model="gpt-5.1",
+    api_key=OPENAI_API_KEY
+)
+
+# =========================
+# State
+# =========================
+
+class TravelState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+    user_query: str
+    flight_results: str
+    hotel_results: str
+    itinerary: str
+    llm_calls: int
+
+# =========================
+# Flight Agent
+# =========================
+
+def flight_agent(state: TravelState):
+    query = state["user_query"]
+    flight_data = search_flights(query)
+
+    return {
+        "flight_results": flight_data,
+        "messages": [
+            AIMessage(content="Flight results fetched.")
+        ],
+        "llm_calls": state.get("llm_calls", 0) + 1
+    }
+
+
+
+# =========================
+# Hotel Agent
+# =========================
+
+def hotel_agent(state: TravelState):
+    query = f"Best hotels for {state['user_query']}"
+    hotel_results = tavily_search(query)
+
+    return {
+        "hotel_results": hotel_results,
+        "messages": [
+            AIMessage(content="Hotel information fetched.")
+        ],
+        "llm_calls": state.get("llm_calls", 0) + 1
+    }
+
+
+
+
+# =========================
+# Itinerary Agent
+# =========================
+
+def itinerary_agent(state: TravelState):
+    prompt = f"""
+Create a complete travel itinerary.
+
+User Query:
+{state['user_query']}
+
+Flight Results:
+{state['flight_results']}
+
+Hotel Results:
+{state['hotel_results']}
+
+Make the itinerary practical, budget-aware, and easy to follow.
 """
 
-TOOLS = [search_flights, search_web]
+    response = llm.invoke([
+        SystemMessage(content="You are an expert travel planner."),
+        HumanMessage(content=prompt)
+    ])
+
+    return {
+        "itinerary": response.content,
+        "messages": [response],
+        "llm_calls": state.get("llm_calls", 0) + 1
+    }
 
 
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+# =========================
+# Final Response Agent
+# =========================
+
+def final_agent(state: TravelState):
+    final_prompt = f"""
+Generate the final travel response for the user.
+
+User Request:
+{state['user_query']}
+
+Flights:
+{state['flight_results']}
+
+Hotels:
+{state['hotel_results']}
+
+Itinerary:
+{state['itinerary']}
+
+Format the final answer beautifully using these sections:
+
+1. Trip Summary
+2. Flight Information
+3. Hotel Suggestions
+4. Day-by-Day Itinerary
+5. Estimated Budget
+6. Final Recommendations
+
+Important:
+- Be clear and practical.
+- Mention that live flight API may not provide ticket prices if pricing is unavailable.
+- Keep the response useful for real travel planning.
+"""
+
+    response = llm.invoke([
+        SystemMessage(content="You are a professional AI travel booking assistant."),
+        HumanMessage(content=final_prompt)
+    ])
+
+    return {
+        "messages": [response],
+        "llm_calls": state.get("llm_calls", 0) + 1
+    }
 
 
-def _get_llm():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY is not set. Add it to your .env file.")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    return ChatOpenAI(model=model, temperature=0.2).bind_tools(TOOLS)
+# =========================
+# Build Graph
+# =========================
+
+graph = StateGraph(TravelState)
+
+graph.add_node("flight_agent", flight_agent)
+graph.add_node("hotel_agent", hotel_agent)
+graph.add_node("itinerary_agent", itinerary_agent)
+graph.add_node("final_agent", final_agent)
+
+graph.add_edge(START, "flight_agent")
+graph.add_edge("flight_agent", "hotel_agent")
+graph.add_edge("hotel_agent", "itinerary_agent")
+graph.add_edge("itinerary_agent", "final_agent")
+graph.add_edge("final_agent", END)
 
 
-def call_model(state: AgentState) -> dict:
-    llm = _get_llm()
-    messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
-    response = llm.invoke(messages)
-    return {"messages": [response]}
+# =========================
+# PostgreSQL Checkpointer
+# =========================
+DATABASE_URL = get_database_url()
+
+_conn = psycopg.connect(
+    DATABASE_URL,
+    autocommit=True,
+    row_factory=dict_row
+)
+
+checkpointer = PostgresSaver(_conn)
+checkpointer.setup()
+
+travel_graph = graph.compile(checkpointer=checkpointer)
 
 
-def should_continue(state: AgentState) -> str:
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
-        return "tools"
-    return END
 
+# =========================
+# Function for FastAPI
+# =========================
 
-def build_graph():
-    graph = StateGraph(AgentState)
-    graph.add_node("agent", call_model)
-    graph.add_node("tools", ToolNode(TOOLS))
-    graph.set_entry_point("agent")
-    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
-    graph.add_edge("tools", "agent")
-    return graph.compile()
+def run_travel_agent(user_input: str, thread_id: str | None = None):
+    if not thread_id:
+        thread_id = f"user_{uuid.uuid4().hex}"
 
+    config = {
+        "configurable": {
+            "thread_id": thread_id
+        }
+    }
 
-_agent = None
+    result = travel_graph.invoke(
+        {
+            "messages": [
+                HumanMessage(content=user_input)
+            ],
+            "user_query": user_input,
+            "flight_results": "",
+            "hotel_results": "",
+            "itinerary": "",
+            "llm_calls": 0
+        },
+        config=config
+    )
 
+    final_answer = result["messages"][-1].content
 
-def get_agent():
-    global _agent
-    if _agent is None:
-        _agent = build_graph()
-    return _agent
-
-
-def run_agent(user_message: str, history: list[dict] | None = None) -> str:
-    """Run the EasyTrip agent and return the final assistant reply."""
-    agent = get_agent()
-    messages: list[BaseMessage] = []
-
-    if history:
-        for item in history:
-            role = item.get("role")
-            content = item.get("content", "")
-            if role == "user":
-                messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                messages.append(AIMessage(content=content))
-
-    messages.append(HumanMessage(content=user_message))
-    result = agent.invoke({"messages": messages})
-    final = result["messages"][-1]
-    return getattr(final, "content", str(final))
+    return {
+        "thread_id": thread_id,
+        "answer": final_answer,
+        "flight_results": result.get("flight_results", ""),
+        "hotel_results": result.get("hotel_results", ""),
+        "itinerary": result.get("itinerary", ""),
+        "llm_calls": result.get("llm_calls", 0),
+    }
