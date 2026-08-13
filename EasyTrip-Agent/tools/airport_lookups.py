@@ -41,6 +41,9 @@ country_aliases = {
     "Mexico": "MEX",
     "Peru": "PER",
     "Venezuela": "VEN",
+    "Thailand": "THA",
+    "Dubai": "UAE",
+    "United Arab Emirates": "UAE",
 }
 
 country_main_airports = {
@@ -84,6 +87,9 @@ country_main_airports = {
     "MEX": "MEX",
     "PER": "LIM",
     "VEN": "CCS",
+    "THA": "BKK",
+    "UAE": "DXB",
+    "JPN": "TYO",
 }
 
 city_main_airports = {
@@ -127,4 +133,16 @@ city_main_airports = {
     "Mexico City": "MEX",
     "Lima": "LIM",
     "Caracas": "CCS",
+    "Bangkok": "BKK",
+    "Dubai": "DXB",
+    "Tokyo": "TYO",
+    "Delhi": "DEL",
+    "Chennai": "MAA",
+    "Hyderabad": "HYD",
+    "Pune": "PNQ",
+    "Mumbai": "BOM",
+    "Delhi": "DEL",
+    "Chennai": "MAA",
+    "Pune": "PNQ",
+    "Mumbai": "BOM",
 }
